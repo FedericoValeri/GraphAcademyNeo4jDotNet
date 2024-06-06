@@ -37,15 +37,57 @@ namespace Neoflix.Services
         /// The task result contains a list of records.
         /// </returns>
         // tag::all[]
-        public async Task<Dictionary<string, object>[]> AllAsync(string sort = "title", 
+        public async Task<Dictionary<string, object>[]> AllAsync(string sort = "title",
             Ordering order = Ordering.Asc, int limit = 6, int skip = 0, string userId = null)
         {
-            // TODO: Open an Session
-            // TODO: Execute a query in a new Read Transaction
-            // TODO: Get a list of Movies from the Result
-            // TODO: Close the session
 
-            return await Task.FromResult(Fixtures.Popular.Skip(skip).Take(limit).ToArray());
+            // Open a new session.
+            await using var session = _driver.AsyncSession();
+
+            // Execute a query in a new Read Transaction.
+            return await session.ExecuteReadAsync(async tx =>
+            {
+                // Query Cypher:
+                // 1. MATCH (m:Movie) = trova tutti i nodi che hanno l'etichetta Movie
+                // 2. WHERE m.{sort} IS NOT NULL = filtra i nodi trovati in precedenza, assicurandosi che la proprietà specificata da sort non sia nulla
+                // 3. RETURN m { .* } AS movie = ritorna i nodi Movie come un oggetto JSON, con tutte le proprietà del nodo (.* significa tutte le proprietà)
+                // 4. ORDER BY m.{sort} {order.ToString("G").ToUpper()} = ordina i risultati in base alla proprietà specificata da sort e nell'ordine specificato da order (ascendente o discendente). order.ToString("G").ToUpper() converte il valore di order in una stringa e la trasforma in maiuscolo, per ottenere 'ASC' o 'DESC'
+                // 5. SKIP $skip LIMIT $limit = SKIP salta i primi $skip risultati e LIMIT limita il numero di risultati restituiti a $limit. Questi valori sono passati come parametri alla query
+                var cursor = await tx.RunAsync(@$"
+                      MATCH (m:Movie)
+                      WHERE m.{sort} IS NOT NULL
+                      RETURN m {{ .* }} AS movie
+                      ORDER BY m.{sort} {order.ToString("G").ToUpper()}
+                      SKIP $skip
+                      LIMIT $limit", new { skip, limit });
+
+                // Supponendo di avere questi dati:
+                // [
+                //   { "movie": { "title": "Inception", "releaseDate": "2010", "director": "Christopher Nolan" } },
+                //   { "movie": { "title": "The Matrix", "releaseDate": "1999", "director": "Lana Wachowski, Lilly Wachowski" } }
+                // ]
+                var records = await cursor.ToListAsync();
+
+                // records diventa:
+                // List<IRecord> records = new List<IRecord>
+                // {
+                //     new Record(new Dictionary<string, object> { { "movie", new Dictionary<string, object> { { "title", "Inception" }, { "releaseDate", "2010" }, { "director", "Christopher Nolan" } } } }),
+                //     new Record(new Dictionary<string, object> { { "movie", new Dictionary<string, object> { { "title", "The Matrix" }, { "releaseDate", "1999" }, { "director", "Lana Wachowski, Lilly Wachowski" } } } })
+                // };
+                var movies = records
+                    .Select(x => x["movie"].As<Dictionary<string, object>>())
+                    .ToArray();
+
+                // movies diventa:
+                //Dictionary<string, object>[] movies = new Dictionary<string, object>[]
+                //{
+                //    new Dictionary<string, object> { { "title", "Inception" }, { "releaseDate", "2010" }, { "director", "Christopher Nolan" } },
+                //    new Dictionary<string, object> { { "title", "The Matrix" }, { "releaseDate", "1999" }, { "director", "Lana Wachowski, Lilly Wachowski" } }
+                //};
+
+                return movies;
+            });
+
         }
         // end::all[]
 
