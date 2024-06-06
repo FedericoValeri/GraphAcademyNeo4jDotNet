@@ -41,11 +41,13 @@ namespace Neoflix.Services
             var rounds = Config.UnpackPasswordConfig();
             var encrypted = BCryptNet.HashPassword(plainPassword, rounds);
 
-            await using var session = _driver.AsyncSession();
-
-            var user = await session.ExecuteWriteAsync(async tx =>
+            try
             {
-                var query = @"
+                await using var session = _driver.AsyncSession();
+
+                var user = await session.ExecuteWriteAsync(async tx =>
+                {
+                    var query = @"
                     CREATE (u:User {
                         userId: randomUuid(),
                         email: $email,
@@ -53,17 +55,23 @@ namespace Neoflix.Services
                         name: $name
                     })
                     RETURN u { .userId, .name, .email } as u";
-                var cursor = await tx.RunAsync(query, new { email, encrypted, name });
+                    var cursor = await tx.RunAsync(query, new { email, encrypted, name });
 
-                var record = await cursor.SingleAsync();
-                // Extract safe properties from the user node (`u`) in the first row
-                return record["u"].As<Dictionary<string, object>>();
-            });
+                    var record = await cursor.SingleAsync();
+                    // Extract safe properties from the user node (`u`) in the first row
+                    return record["u"].As<Dictionary<string, object>>();
+                });
 
-            var safeProperties = SafeProperties(user);
-            safeProperties.Add("token", JwtHelper.CreateToken(GetUserClaims(safeProperties)));
+                var safeProperties = SafeProperties(user);
+                safeProperties.Add("token", JwtHelper.CreateToken(GetUserClaims(safeProperties)));
 
-            return safeProperties;
+                return safeProperties;
+            }
+            catch (ClientException exception) when (exception.Code == "Neo.ClientError.Schema.ConstraintValidationFailed")
+            {
+                throw new ValidationException(exception.Message, email);
+            }
+
         }
         // end::register[]
 
@@ -109,7 +117,7 @@ namespace Neoflix.Services
                 return Task.FromResult(safeProperties);
             }
 
-            return Task.FromResult<Dictionary<string,object>>(null);
+            return Task.FromResult<Dictionary<string, object>>(null);
         }
         // end::authenticate[]
 
