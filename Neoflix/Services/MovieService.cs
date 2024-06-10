@@ -47,19 +47,25 @@ namespace Neoflix.Services
             // Execute a query in a new Read Transaction.
             return await session.ExecuteReadAsync(async tx =>
             {
+                
+                var favorites = await GetUserFavoritesAsync(tx, userId);
+
                 // Query Cypher:
                 // 1. MATCH (m:Movie) = trova tutti i nodi che hanno l'etichetta Movie
                 // 2. WHERE m.{sort} IS NOT NULL = filtra i nodi trovati in precedenza, assicurandosi che la proprietà specificata da sort non sia nulla
-                // 3. RETURN m { .* } AS movie = ritorna i nodi Movie come un oggetto JSON, con tutte le proprietà del nodo (.* significa tutte le proprietà)
+                // 3. RETURN m { .*, favorite: m.tmdbId IN $favorites } AS movie = ritorna i nodi Movie come un oggetto JSON, con tutte le proprietà del nodo (.* significa tutte le proprietà) e aggiunge la proprietà booleana 'favorite' basata sulla presenza di 'tmdbId' nella lista '$favorites'.
                 // 4. ORDER BY m.{sort} {order.ToString("G").ToUpper()} = ordina i risultati in base alla proprietà specificata da sort e nell'ordine specificato da order (ascendente o discendente). order.ToString("G").ToUpper() converte il valore di order in una stringa e la trasforma in maiuscolo, per ottenere 'ASC' o 'DESC'
                 // 5. SKIP $skip LIMIT $limit = SKIP salta i primi $skip risultati e LIMIT limita il numero di risultati restituiti a $limit. Questi valori sono passati come parametri alla query
                 var cursor = await tx.RunAsync(@$"
-                      MATCH (m:Movie)
-                      WHERE m.{sort} IS NOT NULL
-                      RETURN m {{ .* }} AS movie
-                      ORDER BY m.{sort} {order.ToString("G").ToUpper()}
-                      SKIP $skip
-                      LIMIT $limit", new { skip, limit });
+                    MATCH (m:Movie)
+                    WHERE m.{sort} IS NOT NULL       
+                    RETURN m {{
+                        .*,
+                        favorite: m.tmdbId IN $favorites
+                    }} AS movie
+                    ORDER BY m.{sort} {order.ToString("G").ToUpper()}
+                    SKIP $skip
+                    LIMIT $limit", new { skip, limit, favorites });
 
                 // Supponendo di avere questi dati:
                 // [
@@ -236,9 +242,17 @@ namespace Neoflix.Services
         /// The task result contains a list of tmdbIds.
         /// </returns>
         // tag::getUserFavorites[]
-        private async Task<string[]> GetUserFavoritesAsync(IAsyncTransaction transaction, string userId)
+        private static async Task<string[]> GetUserFavoritesAsync(IAsyncQueryRunner transaction, string userId)
         {
-            return await Task.FromResult(Array.Empty<string>());
+            if (userId == null)
+                return Array.Empty<string>();
+            var query = @"
+                MATCH (u:User {userId: $userId})-[:HAS_FAVORITE]->(m)
+                RETURN m.tmdbId as id";
+            var cursor = await transaction.RunAsync(query, new { userId });
+            var records = await cursor.ToListAsync();
+
+            return records.Select(x => x["id"].As<string>()).ToArray();
         }
         // end::getUserFavorites[]
     }
